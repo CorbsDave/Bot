@@ -1,101 +1,104 @@
+const BASE = 'https://www.googleapis.com';
+
 /**
- * Google Gmail + Calendar API helpers
+ * Get Google user profile
  */
-
-const BASE_GMAIL = 'https://gmail.googleapis.com/gmail/v1/users/me';
-const BASE_CALENDAR = 'https://www.googleapis.com/calendar/v3';
-
-async function apiFetch(url, token, options = {}) {
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
+export async function getGoogleUserProfile(token) {
+  const res = await fetch(`${BASE}/oauth2/v2/userinfo`, {
+    headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Google API error ${res.status}: ${err}`);
-  }
+  if (!res.ok) throw new Error(`Google profile error: ${res.status}`);
   return res.json();
 }
 
-/** GET https://www.googleapis.com/oauth2/v2/userinfo */
-export async function getGoogleUserProfile(token) {
-  return apiFetch('https://www.googleapis.com/oauth2/v2/userinfo', token);
-}
-
-/** List Gmail message IDs */
+/**
+ * List Gmail message IDs
+ */
 export async function listGmailMessages(token, query = 'is:unread', maxResults = 30) {
   const params = new URLSearchParams({ q: query, maxResults });
-  return apiFetch(`${BASE_GMAIL}/messages?${params}`, token);
+  const res = await fetch(`${BASE}/gmail/v1/users/me/messages?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Gmail list error: ${res.status}`);
+  const data = await res.json();
+  return data.messages || [];
 }
 
-/** Get a full Gmail message */
+/**
+ * Get a full Gmail message by ID
+ */
 export async function getGmailMessage(token, messageId) {
-  return apiFetch(`${BASE_GMAIL}/messages/${messageId}?format=full`, token);
+  const res = await fetch(
+    `${BASE}/gmail/v1/users/me/messages/${messageId}?format=full`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok) throw new Error(`Gmail message error: ${res.status}`);
+  return res.json();
 }
 
-/** Send a Gmail reply */
+/**
+ * Send a Gmail reply
+ */
 export async function sendGmailReply(token, threadId, to, subject, body) {
-  const subject_ = subject.startsWith('Re:') ? subject : `Re: ${subject}`;
-  const rawEmail = [
+  const emailContent = [
     `To: ${to}`,
-    `Subject: ${subject_}`,
-    'Content-Type: text/plain; charset="UTF-8"',
+    `Subject: ${subject.startsWith('Re:') ? subject : `Re: ${subject}`}`,
+    'Content-Type: text/plain; charset=utf-8',
     'MIME-Version: 1.0',
     '',
     body,
   ].join('\r\n');
 
-  const encoded = btoa(unescape(encodeURIComponent(rawEmail)))
+  const encoded = btoa(unescape(encodeURIComponent(emailContent)))
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
 
-  return apiFetch(`${BASE_GMAIL}/messages/send`, token, {
+  const res = await fetch(`${BASE}/gmail/v1/users/me/messages/send`, {
     method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify({ raw: encoded, threadId }),
   });
+  if (!res.ok) throw new Error(`Gmail send error: ${res.status}`);
+  return res.json();
 }
 
-/** List primary calendar events for the next N days */
+/**
+ * List Google Calendar events for the next N days
+ */
 export async function listCalendarEvents(token, daysAhead = 7) {
   const now = new Date();
   const future = new Date(now.getTime() + daysAhead * 24 * 60 * 60 * 1000);
   const params = new URLSearchParams({
     timeMin: now.toISOString(),
     timeMax: future.toISOString(),
-    singleEvents: true,
+    singleEvents: 'true',
     orderBy: 'startTime',
-    maxResults: 50,
+    maxResults: '50',
   });
-  return apiFetch(`${BASE_CALENDAR}/calendars/primary/events?${params}`, token);
+  const res = await fetch(
+    `${BASE}/calendar/v3/calendars/primary/events?${params}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok) throw new Error(`Calendar events error: ${res.status}`);
+  const data = await res.json();
+  return data.items || [];
 }
 
-/** Decode base64url-encoded string */
-function decodeBase64(str) {
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function decodeBase64(encoded) {
   try {
-    const base64 = str.replace(/-/g, '+').replace(/_/g, '/');
-    const decoded = atob(base64);
-    return decodeURIComponent(escape(decoded));
+    const fixed = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    return decodeURIComponent(escape(atob(fixed)));
   } catch {
-    try {
-      return atob(str.replace(/-/g, '+').replace(/_/g, '/'));
-    } catch {
-      return '';
-    }
+    return '';
   }
 }
 
-/** Extract header value from Gmail headers array */
-function getHeader(headers, name) {
-  const h = headers?.find((h) => h.name.toLowerCase() === name.toLowerCase());
-  return h?.value || '';
-}
-
-/** Recursively extract text body from MIME parts */
 function extractBody(payload) {
   if (!payload) return '';
 
@@ -107,54 +110,42 @@ function extractBody(payload) {
   // Multipart
   if (payload.parts) {
     // Prefer text/plain
-    const plain = payload.parts.find((p) => p.mimeType === 'text/plain');
-    if (plain) return extractBody(plain);
+    const textPart = payload.parts.find((p) => p.mimeType === 'text/plain');
+    if (textPart?.body?.data) return decodeBase64(textPart.body.data);
 
-    // Fallback to text/html
-    const html = payload.parts.find((p) => p.mimeType === 'text/html');
-    if (html) return extractBody(html);
-
-    // Recurse through all parts
+    // Recurse into nested parts
     for (const part of payload.parts) {
-      const text = extractBody(part);
-      if (text) return text;
+      const nested = extractBody(part);
+      if (nested) return nested;
     }
   }
 
   return '';
 }
 
+function getHeader(headers, name) {
+  const h = headers?.find((h) => h.name.toLowerCase() === name.toLowerCase());
+  return h?.value || '';
+}
+
 /**
- * Parse a raw Gmail message into a normalised email object.
- * Returns { id, threadId, from, to, subject, date, body, snippet, isUnread, provider }
+ * Parse a raw Gmail API message into a normalized shape
  */
 export function parseGmailMessage(rawMessage) {
-  const { id, threadId, snippet, labelIds, payload } = rawMessage;
+  const { id, threadId, labelIds = [], snippet, payload } = rawMessage;
   const headers = payload?.headers || [];
-
-  const from = getHeader(headers, 'From');
-  const to = getHeader(headers, 'To');
-  const subject = getHeader(headers, 'Subject');
-  const dateStr = getHeader(headers, 'Date');
-  const date = dateStr ? new Date(dateStr) : new Date();
-
-  const body = extractBody(payload);
-  const isUnread = labelIds?.includes('UNREAD') ?? false;
 
   return {
     id,
     threadId,
-    from,
-    to,
-    subject,
-    date,
-    body,
-    snippet,
-    isUnread,
     provider: 'gmail',
-    // triage fields populated later by AI
-    priority: null,
-    aiSummary: null,
-    suggestedAction: null,
+    from: getHeader(headers, 'From'),
+    to: getHeader(headers, 'To'),
+    subject: getHeader(headers, 'Subject') || '(no subject)',
+    date: getHeader(headers, 'Date'),
+    body: extractBody(payload),
+    snippet: snippet || '',
+    isUnread: labelIds.includes('UNREAD'),
+    triage: null,
   };
 }

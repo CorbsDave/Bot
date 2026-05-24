@@ -20,34 +20,21 @@ const useMdStore = create((set) => ({
   isFetchingCalendar: false,
 
   // Actions
-  setGoogleAuth: (auth) =>
-    set((state) => ({ googleAuth: { ...state.googleAuth, ...auth } })),
-
-  setMsAuth: (auth) =>
-    set((state) => ({ msAuth: { ...state.msAuth, ...auth } })),
+  setGoogleAuth: (auth) => set({ googleAuth: auth }),
+  setMsAuth: (auth) => set({ msAuth: auth }),
 
   setEmails: (emails) => set({ emails }),
-
-  updateEmail: (id, updates) =>
-    set((state) => ({
-      emails: state.emails.map((e) => (e.id === id ? { ...e, ...updates } : e)),
-    })),
-
   setCalendarEvents: (calendarEvents) => set({ calendarEvents }),
 
   setActiveView: (activeView) => set({ activeView, selectedEmail: null }),
-
-  selectEmail: (email) => set({ selectedEmail: email }),
+  selectEmail: (selectedEmail) => set({ selectedEmail }),
 
   addAiMessage: (message) =>
     set((state) => ({ aiMessages: [...state.aiMessages, message] })),
-
-  setAiMessages: (aiMessages) => set({ aiMessages }),
+  clearAiMessages: () => set({ aiMessages: [] }),
 
   setLoading: (isLoading) => set({ isLoading }),
-
   setFetchingEmails: (isFetchingEmails) => set({ isFetchingEmails }),
-
   setFetchingCalendar: (isFetchingCalendar) => set({ isFetchingCalendar }),
 
   clearAuth: () =>
@@ -56,9 +43,18 @@ const useMdStore = create((set) => ({
       msAuth: { token: null, user: null, connected: false },
       emails: [],
       calendarEvents: [],
+      activeView: 'dashboard',
       selectedEmail: null,
       aiMessages: [],
     }),
+
+  // Update triage for a specific email
+  updateEmailTriage: (emailId, triage) =>
+    set((state) => ({
+      emails: state.emails.map((e) =>
+        e.id === emailId ? { ...e, triage } : e
+      ),
+    })),
 }));
 
 export default useMdStore;

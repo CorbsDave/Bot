@@ -1,31 +1,19 @@
+const GRAPH = 'https://graph.microsoft.com/v1.0/me';
+
 /**
- * Microsoft Graph API helpers (Outlook Mail + Calendar)
+ * Get Microsoft user profile
  */
-
-const BASE = 'https://graph.microsoft.com/v1.0/me';
-
-async function apiFetch(url, token, options = {}) {
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
+export async function getMsUserProfile(token) {
+  const res = await fetch(`${GRAPH}`, {
+    headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Microsoft Graph API error ${res.status}: ${err}`);
-  }
+  if (!res.ok) throw new Error(`MS profile error: ${res.status}`);
   return res.json();
 }
 
-/** GET /me — user profile */
-export async function getMsUserProfile(token) {
-  return apiFetch(`${BASE}`, token);
-}
-
-/** List inbox messages ordered by receivedDateTime desc */
+/**
+ * List Outlook inbox messages
+ */
 export async function listOutlookMessages(token, top = 30) {
   const params = new URLSearchParams({
     $top: top,
@@ -33,72 +21,77 @@ export async function listOutlookMessages(token, top = 30) {
     $select:
       'id,conversationId,subject,from,toRecipients,receivedDateTime,bodyPreview,isRead,body',
   });
-  return apiFetch(`${BASE}/mailFolders/inbox/messages?${params}`, token);
+  const res = await fetch(`${GRAPH}/mailFolders/inbox/messages?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Outlook list error: ${res.status}`);
+  const data = await res.json();
+  return data.value || [];
 }
 
-/** Reply to a message */
+/**
+ * Send a reply to an Outlook message
+ */
 export async function sendOutlookReply(token, messageId, comment) {
-  return apiFetch(`${BASE}/messages/${messageId}/reply`, token, {
+  const res = await fetch(`${GRAPH}/messages/${messageId}/reply`, {
     method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify({ comment }),
   });
+  if (!res.ok) throw new Error(`Outlook reply error: ${res.status}`);
+  return res.ok;
 }
 
-/** List calendar events via calendarView for the next N days */
+/**
+ * List Outlook calendar events for the next N days
+ */
 export async function listOutlookCalendarEvents(token, daysAhead = 7) {
   const now = new Date();
   const future = new Date(now.getTime() + daysAhead * 24 * 60 * 60 * 1000);
   const params = new URLSearchParams({
     startDateTime: now.toISOString(),
     endDateTime: future.toISOString(),
-    $select: 'id,subject,start,end,location,attendees,bodyPreview,organizer',
+    $select: 'id,subject,start,end,location,attendees,organizer,bodyPreview,isOnlineMeeting,onlineMeetingUrl',
     $orderby: 'start/dateTime',
-    $top: 50,
+    $top: '50',
   });
-  return apiFetch(`${BASE}/calendarView?${params}`, token);
+  const res = await fetch(`${GRAPH}/calendarView?${params}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Prefer: `outlook.timezone="UTC"`,
+    },
+  });
+  if (!res.ok) throw new Error(`Outlook calendar error: ${res.status}`);
+  const data = await res.json();
+  return data.value || [];
 }
 
 /**
- * Parse an Outlook message into the same normalised shape as parseGmailMessage.
- * Returns { id, threadId, from, to, subject, date, body, snippet, isUnread, provider }
+ * Parse an Outlook message into a normalized shape (same as Gmail)
  */
 export function parseOutlookMessage(msg) {
-  const from = msg.from?.emailAddress
-    ? `${msg.from.emailAddress.name || ''} <${msg.from.emailAddress.address}>`
-    : '';
+  const fromName = msg.from?.emailAddress?.name || '';
+  const fromEmail = msg.from?.emailAddress?.address || '';
+  const from = fromName ? `${fromName} <${fromEmail}>` : fromEmail;
 
-  const to = (msg.toRecipients || [])
-    .map((r) => `${r.emailAddress?.name || ''} <${r.emailAddress?.address || ''}>`)
+  const toRecipients = (msg.toRecipients || [])
+    .map((r) => r.emailAddress?.address || '')
     .join(', ');
-
-  const body =
-    msg.body?.contentType === 'html'
-      ? stripHtml(msg.body?.content || '')
-      : msg.body?.content || msg.bodyPreview || '';
 
   return {
     id: msg.id,
-    threadId: msg.conversationId,
-    from,
-    to,
-    subject: msg.subject || '(No subject)',
-    date: msg.receivedDateTime ? new Date(msg.receivedDateTime) : new Date(),
-    body,
-    snippet: msg.bodyPreview || '',
-    isUnread: !msg.isRead,
+    threadId: msg.conversationId || msg.id,
     provider: 'outlook',
-    priority: null,
-    aiSummary: null,
-    suggestedAction: null,
+    from,
+    to: toRecipients,
+    subject: msg.subject || '(no subject)',
+    date: msg.receivedDateTime || '',
+    body: msg.body?.content || msg.bodyPreview || '',
+    snippet: msg.bodyPreview || '',
+    isUnread: msg.isRead === false,
+    triage: null,
   };
-}
-
-/** Strip HTML tags for plain-text body fallback */
-function stripHtml(html) {
-  return html
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
 }

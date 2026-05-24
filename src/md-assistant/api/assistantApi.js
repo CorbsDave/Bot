@@ -5,9 +5,7 @@ const client = new Anthropic({
   dangerouslyAllowBrowser: true,
 });
 
-const MODEL = 'claude-sonnet-4-5';
-
-const SYSTEM_PROMPT = `You are an intelligent personal executive assistant for a Managing Director. You help manage email and calendar with precision and discretion.
+const MD_SYSTEM_PROMPT = `You are an intelligent personal executive assistant for a Managing Director. You help manage email and calendar with precision and discretion.
 
 PRIORITY TRIAGE SYSTEM:
 🔴 P1 CRITICAL — Reply today: client escalations, board matters, legal/financial decisions, urgent deadlines
@@ -19,10 +17,10 @@ When triaging emails, respond with JSON: { "priority": "P1"|"P2"|"P3", "summary"
 When drafting replies: write professional, decisive, concise executive-style emails.
 
 When creating meeting prep briefs, format as:
-**Meeting:** [title]
-**Purpose:** [1 sentence]
-**Key Points:** [bullets]
-**Decisions Needed:** [bullets]
+**Meeting:** [title]  
+**Purpose:** [1 sentence]  
+**Key Points:** [bullets]  
+**Decisions Needed:** [bullets]  
 **Prep:** [any prep needed]
 
 Always use Markdown formatting in your responses.`;
@@ -31,136 +29,155 @@ Always use Markdown formatting in your responses.`;
  * Triage an email — returns { priority, summary, suggestedAction }
  */
 export async function triageEmail(email) {
-  const content = `Please triage this email and respond with only valid JSON:
+  const content = `Triage this email and respond with JSON only:
 
 From: ${email.from}
 Subject: ${email.subject}
 Date: ${email.date}
+Body: ${email.body?.slice(0, 1500) || email.snippet}`;
 
-Body:
-${(email.body || email.snippet || '').slice(0, 2000)}`;
-
-  const message = await client.messages.create({
-    model: MODEL,
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-5',
     max_tokens: 300,
-    system: SYSTEM_PROMPT,
+    system: MD_SYSTEM_PROMPT,
     messages: [{ role: 'user', content }],
   });
 
-  const text = message.content[0]?.text || '{}';
-
+  const text = response.content[0]?.text || '';
   try {
-    // Extract JSON from the response (may be wrapped in markdown code blocks)
+    // Extract JSON from response
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    return jsonMatch ? JSON.parse(jsonMatch[0]) : { priority: 'P3', summary: text, suggestedAction: 'Review' };
+    if (jsonMatch) return JSON.parse(jsonMatch[0]);
   } catch {
-    return { priority: 'P3', summary: text, suggestedAction: 'Review' };
+    // fallback
   }
+  return { priority: 'P3', summary: text.slice(0, 200), suggestedAction: 'Review' };
 }
 
 /**
  * Draft a reply to an email
  */
 export async function draftReply(email, instruction = '') {
-  const content = `Please draft a professional executive-style reply to this email.
-${instruction ? `\nInstruction: ${instruction}` : ''}
+  const content = `Draft a professional executive reply to this email.
+${instruction ? `Instruction: ${instruction}` : ''}
 
-Original Email:
 From: ${email.from}
 Subject: ${email.subject}
-Date: ${email.date}
+Body: ${email.body?.slice(0, 2000) || email.snippet}
 
-Body:
-${(email.body || email.snippet || '').slice(0, 3000)}`;
+Write only the email body (no subject line, no "Dear/Hi" unless appropriate, no signature).`;
 
-  const message = await client.messages.create({
-    model: MODEL,
-    max_tokens: 800,
-    system: SYSTEM_PROMPT,
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-5',
+    max_tokens: 600,
+    system: MD_SYSTEM_PROMPT,
     messages: [{ role: 'user', content }],
   });
 
-  return message.content[0]?.text || '';
+  return response.content[0]?.text || '';
 }
 
 /**
- * Generate a meeting prep brief for a calendar event
+ * Generate a meeting prep brief
  */
 export async function getMeetingPrep(event, context = '') {
-  const content = `Please create a meeting prep brief for the following calendar event:
+  const attendees = event.attendees?.length
+    ? `Attendees: ${event.attendees.slice(0, 5).join(', ')}`
+    : '';
 
-Title: ${event.title || event.subject || 'Untitled Meeting'}
-Time: ${event.start} — ${event.end}
-Location: ${event.location || 'N/A'}
-Attendees: ${Array.isArray(event.attendees) ? event.attendees.map((a) => a.name || a.emailAddress?.name || a).join(', ') : event.attendees || 'N/A'}
-Description: ${event.description || event.bodyPreview || 'N/A'}
-${context ? `\nAdditional context: ${context}` : ''}`;
+  const content = `Create a meeting prep brief for this event:
 
-  const message = await client.messages.create({
-    model: MODEL,
-    max_tokens: 600,
-    system: SYSTEM_PROMPT,
+Title: ${event.title || event.subject}
+Time: ${event.startTime} - ${event.endTime}
+${event.location ? `Location: ${event.location}` : ''}
+${attendees}
+${event.description ? `Description: ${event.description}` : ''}
+${context ? `Additional context: ${context}` : ''}`;
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-5',
+    max_tokens: 800,
+    system: MD_SYSTEM_PROMPT,
     messages: [{ role: 'user', content }],
   });
 
-  return message.content[0]?.text || '';
+  return response.content[0]?.text || '';
 }
 
 /**
- * Generate an executive morning briefing
+ * Generate a daily morning briefing
  */
 export async function getDailyBriefing(emails, events) {
-  const p1Emails = emails.filter((e) => e.priority === 'P1');
+  const p1Emails = emails.filter((e) => e.triage?.priority === 'P1');
   const todayEvents = events.filter((e) => {
-    const start = new Date(e.start);
-    const today = new Date();
-    return start.toDateString() === today.toDateString();
+    const today = new Date().toDateString();
+    return new Date(e.startTime || e.start).toDateString() === today;
   });
 
-  const content = `Please generate a concise executive morning briefing.
+  const emailSummary = p1Emails
+    .slice(0, 5)
+    .map((e) => `- [P1] From ${e.from}: "${e.subject}"`)
+    .join('\n');
 
-EMAIL SUMMARY:
-- Total unread: ${emails.filter((e) => e.isUnread).length}
-- P1 Critical: ${p1Emails.length} email(s)
-- P2 Today: ${emails.filter((e) => e.priority === 'P2').length} email(s)
+  const eventSummary = todayEvents
+    .slice(0, 5)
+    .map((e) => `- ${e.startTime || e.start}: ${e.title || e.subject}`)
+    .join('\n');
 
-${p1Emails.length > 0 ? `TOP PRIORITY EMAILS:\n${p1Emails.slice(0, 3).map((e) => `• From ${e.from}: "${e.subject}" — ${e.aiSummary || e.snippet}`).join('\n')}` : ''}
+  const content = `Generate an executive morning briefing for today.
 
-TODAY'S MEETINGS (${todayEvents.length}):
-${todayEvents.map((e) => `• ${e.start} — ${e.title || e.subject}`).join('\n') || 'No meetings today'}
+UNREAD EMAILS: ${emails.filter((e) => e.isUnread).length} total, ${p1Emails.length} P1 critical
+P1 EMAILS:
+${emailSummary || 'None'}
 
-Generate a brief, punchy executive briefing with the most important items to address today.`;
+TODAY'S MEETINGS: ${todayEvents.length}
+${eventSummary || 'No meetings today'}
 
-  const message = await client.messages.create({
-    model: MODEL,
-    max_tokens: 600,
-    system: SYSTEM_PROMPT,
+Write a concise, actionable morning briefing. Lead with the most critical items. Use markdown formatting.`;
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-5',
+    max_tokens: 800,
+    system: MD_SYSTEM_PROMPT,
     messages: [{ role: 'user', content }],
   });
 
-  return message.content[0]?.text || '';
+  return response.content[0]?.text || '';
 }
 
 /**
- * Chat with the assistant, with email and calendar context injected
+ * General chat with the assistant, with email + calendar context
  */
 export async function chatWithAssistant(messages, emailsContext = [], calendarContext = []) {
-  const contextBlock =
-    emailsContext.length > 0 || calendarContext.length > 0
-      ? `\n\n[CURRENT CONTEXT]\nEmails in inbox: ${emailsContext.length} (${emailsContext.filter((e) => e.isUnread).length} unread, ${emailsContext.filter((e) => e.priority === 'P1').length} P1 critical)\nToday's meetings: ${calendarContext.filter((e) => new Date(e.start).toDateString() === new Date().toDateString()).length}\nNext meeting: ${calendarContext[0] ? `${calendarContext[0].title || calendarContext[0].subject} at ${calendarContext[0].start}` : 'None scheduled'}`
-      : '';
+  const p1Emails = emailsContext.filter((e) => e.triage?.priority === 'P1');
+  const unreadCount = emailsContext.filter((e) => e.isUnread).length;
+  const today = new Date().toDateString();
+  const todayEvents = calendarContext.filter(
+    (e) => new Date(e.startTime || e.start).toDateString() === today
+  );
 
-  const apiMessages = messages.map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
+  const contextBlock = `
+CURRENT CONTEXT:
+- Unread emails: ${unreadCount} (${p1Emails.length} P1 critical)
+- Today's meetings: ${todayEvents.length}
+${todayEvents
+  .slice(0, 3)
+  .map((e) => `  • ${e.startTime || e.start}: ${e.title || e.subject}`)
+  .join('\n')}
+${p1Emails
+  .slice(0, 3)
+  .map((e) => `  • P1 from ${e.from}: "${e.subject}"`)
+  .join('\n')}
+`;
 
-  const message = await client.messages.create({
-    model: MODEL,
+  const systemWithContext = `${MD_SYSTEM_PROMPT}\n\n${contextBlock}`;
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-5',
     max_tokens: 1000,
-    system: SYSTEM_PROMPT + contextBlock,
-    messages: apiMessages,
+    system: systemWithContext,
+    messages,
   });
 
-  return message.content[0]?.text || '';
+  return response.content[0]?.text || '';
 }
